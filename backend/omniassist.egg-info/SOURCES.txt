@@ -1,0 +1,8 @@
+pyproject.toml
+app/__init__.py
+app/main.py
+omniassist.egg-info/PKG-INFO
+omniassist.egg-info/SOURCES.txt
+omniassist.egg-info/dependency_links.txt
+omniassist.egg-info/requires.txt
+omniassist.egg-info/top_level.txt
