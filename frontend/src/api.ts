@@ -1,7 +1,7 @@
 export const API = ((import.meta.env.VITE_API_URL as string | undefined) ?? "").replace(/\/$/, "");
 export const WS = API
   ? API.replace(/^http/, "ws")
-  : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  : `${typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:"}//${typeof window !== "undefined" ? window.location.host : "localhost:5173"}`;
 
 export interface Citation { ref: number; document: string; section: string | null; snippet: string; filename: string; page: number | null }
 export interface Msg { id?: number; role: "user" | "assistant"; content: string; modality?: "text" | "voice"; citations?: Citation[] | null }
@@ -10,7 +10,7 @@ export interface Me { id: number; email: string; name: string; is_admin: boolean
 export interface TurnResult { conversation_id: number; reply: string; citations: Citation[]; intent: string; pending: { type: string; appointment_id: number } | null; appointment: Appt | null; handoff: boolean; ticket_id: number | null }
 export interface ConvSummary { id: number; channel: string; status: string; created_at: string }
 
-let token: string | null = localStorage.getItem("token");
+let token: string | null = typeof localStorage === "undefined" ? null : localStorage.getItem("token");
 export const getToken = () => token;
 export function setToken(t: string | null) {
   token = t;

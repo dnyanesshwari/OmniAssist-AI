@@ -109,8 +109,16 @@ async def voice(ws: WebSocket, token: str, conversation_id: int | None = None):
                     await start_turn(text)
             elif kind == "audio.chunk":
                 audio_mime = msg.get("mime") or audio_mime
-                if len(audio_buf) < 5_000_000:
-                    audio_buf.extend(base64.b64decode(msg.get("data", "")))
+                try:
+                    chunk = base64.b64decode(msg.get("data", ""), validate=True)
+                except (ValueError, TypeError):
+                    await ws.send_json({"type": "error", "code": "invalid_audio", "message": "Audio data was invalid. Please try recording again."})
+                    continue
+                if len(audio_buf) + len(chunk) > 5_000_000:
+                    audio_buf.clear()
+                    await ws.send_json({"type": "error", "code": "audio_too_large", "message": "That recording was too long. Please try a shorter message."})
+                    continue
+                audio_buf.extend(chunk)
             elif kind == "audio.end":
                 data, audio_buf = bytes(audio_buf), bytearray()
                 try:

@@ -13,15 +13,23 @@ export default function Chat({ conversationId, setConversationId, onBookingChang
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
-  const [simulate, setSimulate] = useState(false);
   const [notice, setNotice] = useState("");
   const [loadError, setLoadError] = useState("");
   const [handoff, setHandoff] = useState<number | null>(null);
+  const pendingVoice = useRef<string[]>([]);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setHandoff(null);
-    if (!conversationId) { setMsgs([]); setLoadError(""); return; }
+    if (!conversationId) {
+      setLoadError("");
+      if (!pendingVoice.current.length) setMsgs([]);
+      if (pendingVoice.current.length) {
+        setMsgs(pendingVoice.current.map((content) => ({ role: "user", content, modality: "voice" })));
+        pendingVoice.current = [];
+      }
+      return;
+    }
     api<Msg[]>(`/conversations/${conversationId}/messages`)
       .then((m) => { setMsgs(m.filter((x) => x.role !== ("tool" as string))); setLoadError(""); })
       .catch((e: Error) => setLoadError(e.message));
@@ -37,7 +45,10 @@ export default function Chat({ conversationId, setConversationId, onBookingChang
   }, [onBookingChange]);
 
   const voice = useVoice(conversationId, {
-    onUser: (t) => setMsgs((m) => [...m, { role: "user", content: t, modality: "voice" }]),
+    onUser: (t) => {
+      setMsgs((m) => [...m, { role: "user", content: t, modality: "voice" }]);
+      if (!conversationId) pendingVoice.current.push(t);
+    },
     onAssistant: applyResult,
     onNotice: setNotice,
   }, setConversationId);
@@ -47,7 +58,7 @@ export default function Chat({ conversationId, setConversationId, onBookingChang
     setMsgs((m) => [...m, { role: "user", content: t, modality: "text" }]);
     setText(""); setBusy(true); setNotice("");
     try {
-      const r = await api<TurnResult>("/chat/message", { body: { text: t, conversation_id: conversationId, simulate_failure: simulate ? "llm" : null } });
+      const r = await api<TurnResult>("/chat/message", { body: { text: t, conversation_id: conversationId } });
       setConversationId(r.conversation_id);
       applyResult(r);
     } catch (ex) {
@@ -57,9 +68,13 @@ export default function Chat({ conversationId, setConversationId, onBookingChang
 
   async function escalate() {
     if (!conversationId) return;
-    const r = await api<{ ticket_id: number }>(`/conversations/${conversationId}/handoff`, { method: "POST", body: {} });
-    setHandoff(r.ticket_id);
-    setMsgs((m) => [...m, { role: "assistant", content: `A human agent has been notified (ticket #${r.ticket_id}).` }]);
+    try {
+      const r = await api<{ ticket_id: number }>(`/conversations/${conversationId}/handoff`, { method: "POST", body: {} });
+      setHandoff(r.ticket_id);
+      setMsgs((m) => [...m, { role: "assistant", content: `A human agent has been notified (ticket #${r.ticket_id}).` }]);
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
   }
 
   return (
@@ -106,7 +121,6 @@ export default function Chat({ conversationId, setConversationId, onBookingChang
         <button onClick={() => send(text)} disabled={busy}>Send</button>
       </div>
       <div className="tools">
-        <label><input type="checkbox" checked={simulate} onChange={(e) => setSimulate(e.target.checked)} /> Simulate AI outage (demo)</label>
         <button className="link" onClick={escalate} disabled={!conversationId}>Talk to a human</button>
       </div>
     </section>

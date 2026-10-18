@@ -117,6 +117,8 @@ omniassist/
 -   Node.js and npm.
 -   A PostgreSQL database. Supabase PostgreSQL is supported by the
     current configuration.
+-   The PostgreSQL `vector` extension (available on Supabase and
+    pgvector-enabled PostgreSQL installations).
 -   A Google Gemini API key for AI and embedding features.
 -   Git (optional, for version control).
 
@@ -250,10 +252,13 @@ npm run dev
 Open the local URL printed by Vite (commonly `http://localhost:5173`).
 Keep the backend and frontend terminals running.
 
-If the frontend uses a Vite environment variable for the backend URL,
-inspect `frontend/.env.example` and configure it in a local
-`frontend/.env` file as documented by the project. Do not put secret API
-keys in frontend environment variables.
+The frontend proxies API and voice WebSocket requests to
+`http://localhost:8000` during development. If the backend runs on a
+different host, update `backend` in `frontend/vite.config.ts`. For a
+separately hosted frontend, set `VITE_API_URL` in `frontend/.env` to the
+backend's public origin and include the frontend origin in
+`CORS_ORIGINS`. Do not put secret API keys in frontend environment
+variables.
 
 ## API overview
 
@@ -383,10 +388,23 @@ Then retry `GET /services` in Swagger.
 ### Frontend cannot reach the backend
 
 -   Confirm the API is running at `http://127.0.0.1:8000`.
--   Check the frontend's API base URL in `frontend/src/api.ts` and its
-    environment example.
+-   In development, Vite proxies HTTP and WebSocket traffic to the
+    backend origin configured in `frontend/vite.config.ts`.
+-   For a separately hosted frontend, set `VITE_API_URL` to the backend
+    origin and allow the frontend origin in `CORS_ORIGINS`.
 -   Check CORS configuration in `.env`.
 -   Inspect browser DevTools and the backend terminal for errors.
+
+### Voice chat does not work
+
+-   Use HTTPS or `localhost`; browsers restrict microphone access on
+    insecure origins.
+-   Allow microphone access when prompted. Browser speech recognition is
+    only available in some browsers; the hold-to-talk fallback uses the
+    configured Gemini API for transcription.
+-   Check that the WebSocket endpoint is reachable at `/ws/voice` and
+    that `GEMINI_API_KEY` is configured when using server-side
+    transcription or TTS.
 
 ## Security notes
 

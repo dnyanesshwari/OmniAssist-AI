@@ -16,6 +16,7 @@ export default defineConfig({
       "/conversations": backend,
       "/chat": backend,
       "/admin": backend,
+      "/health": backend,
       "/ws": { target: "ws://localhost:8000", ws: true },
     },
   },

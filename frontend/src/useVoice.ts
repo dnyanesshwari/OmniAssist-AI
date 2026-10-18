@@ -14,6 +14,7 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
   const [partial, setPartial] = useState("");
   const ws = useRef<WebSocket | null>(null);
   const rec = useRef<any>(null);
+  const recognizing = useRef(false);
   const media = useRef<MediaRecorder | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const hRef = useRef(h);
@@ -35,6 +36,7 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
   }, []);
 
   const stop = useCallback(() => {
+    recognizing.current = false;
     rec.current?.stop?.();
     rec.current = null;
     if (media.current && media.current.state !== "inactive") media.current.stop();
@@ -46,7 +48,10 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
   }, [stopPlayback]);
 
   const start = useCallback(() => {
-    const sock = new WebSocket(`${WS}/ws/voice?token=${getToken()}${conversationId ? `&conversation_id=${conversationId}` : ""}`);
+    if (ws.current && ws.current.readyState <= WebSocket.OPEN) return;
+    const token = getToken();
+    if (!token) { hRef.current.onNotice("Sign in again before starting voice chat."); return; }
+    const sock = new WebSocket(`${WS}/ws/voice?token=${encodeURIComponent(token)}${conversationId ? `&conversation_id=${conversationId}` : ""}`);
     ws.current = sock;
     sock.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
@@ -62,7 +67,11 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
         case "tts.audio": {
           window.speechSynthesis?.cancel();           // server audio replaces browser speech
           const a = new Audio(`data:${m.mime};base64,${m.data}`);
-          audio.current = a; a.play().catch(() => undefined); break;
+          audio.current = a;
+          a.onended = () => setState((s) => s === "speaking" ? "listening" : s);
+          setState("speaking");
+          a.play().catch(() => { hRef.current.onNotice("Audio playback was blocked. Allow audio playback and try again."); setState("listening"); });
+          break;
         }
         case "tts.cancel": stopPlayback(); setState("listening"); break;
         case "transcript.final": hRef.current.onUser(m.text); break;
@@ -71,7 +80,13 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
         case "error": hRef.current.onNotice(m.message ?? "Voice error"); setState("listening"); break;
       }
     };
-    sock.onclose = () => setState("off");
+    sock.onerror = () => hRef.current.onNotice("Voice connection failed. Check that the backend is running and try again.");
+    sock.onclose = () => {
+      recognizing.current = false;
+      rec.current?.stop?.();
+      rec.current = null;
+      setState("off");
+    };
     sock.onopen = () => {
       setState("listening");
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -83,20 +98,32 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
             const text: string = e.results[i][0].transcript;
             if (e.results[i].isFinal) {
               setPartial("");
-              hRef.current.onUser(text.trim());
-              sock.send(JSON.stringify({ type: "transcript.final", text }));
+              if (text.trim() && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "transcript.final", text: text.trim() }));
             } else {
               setPartial(text);
               stopPlayback();                           // barge-in: stop speaking the moment the user talks
-              sock.send(JSON.stringify({ type: "transcript.partial", text }));
+              if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "transcript.partial", text }));
             }
           }
         };
-        r.onend = () => { if (ws.current === sock) { try { r.start(); } catch { /* already started */ } } };
+        r.onerror = (e: any) => {
+          if (e.error !== "aborted" && e.error !== "no-speech") hRef.current.onNotice(`Speech recognition failed: ${e.error ?? "unknown error"}`);
+        };
+        r.onend = () => {
+          if (ws.current !== sock || !recognizing.current || sock.readyState !== WebSocket.OPEN) return;
+          window.setTimeout(() => {
+            if (ws.current === sock && recognizing.current && sock.readyState === WebSocket.OPEN) {
+              try { r.start(); } catch { /* recognition may already be starting */ }
+            }
+          }, 200);
+        };
+        recognizing.current = true;
         r.start();
         rec.current = r;
       } else {
-        hRef.current.onNotice("This browser has no speech recognition. Hold the mic button to record instead.");
+        hRef.current.onNotice(typeof navigator.mediaDevices?.getUserMedia === "function"
+          ? "Speech recognition is unavailable. Hold the mic button to record your message."
+          : "This browser does not support microphone access. You can still type a message.");
       }
     };
   }, [conversationId, onConversation, speak, stop, stopPlayback]);
@@ -104,18 +131,32 @@ export function useVoice(conversationId: number | null, h: Handlers, onConversat
   // push-to-talk fallback (server-side ASR)
   const recordStart = useCallback(async () => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      hRef.current.onNotice("Microphone recording is unavailable in this browser. You can still type a message.");
+      return;
+    }
     stopPlayback();
     ws.current.send(JSON.stringify({ type: "interrupt" }));
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new MediaRecorder(stream);
-    mr.ondataavailable = async (e) => {
-      const buf = new Uint8Array(await e.data.arrayBuffer());
-      let bin = ""; buf.forEach((b) => (bin += String.fromCharCode(b)));
-      ws.current?.send(JSON.stringify({ type: "audio.chunk", mime: mr.mimeType, data: btoa(bin) }));
-    };
-    mr.onstop = () => { stream.getTracks().forEach((t) => t.stop()); ws.current?.send(JSON.stringify({ type: "audio.end" })); };
-    mr.start();
-    media.current = mr;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      mr.ondataavailable = async (e) => {
+        if (!e.data.size || ws.current?.readyState !== WebSocket.OPEN) return;
+        const bytes = new Uint8Array(await e.data.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "audio.chunk", mime: mr.mimeType || "audio/webm", data: btoa(bin) }));
+      };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "audio.end" }));
+      };
+      mr.start(250);
+      media.current = mr;
+    } catch (error) {
+      hRef.current.onNotice(`Microphone access failed: ${(error as Error).message || "allow microphone access and try again"}`);
+    }
   }, [stopPlayback]);
   const recordStop = useCallback(() => { if (media.current?.state === "recording") media.current.stop(); }, []);
 
